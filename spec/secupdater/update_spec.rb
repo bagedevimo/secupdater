@@ -5,7 +5,7 @@ require "stringio"
 require "tmpdir"
 
 module UpdateSpec
-  # outcomes: gem name => version try_update moves it to, :unchanged or :fail, or a hash of those by level
+  # outcomes: gem name => version try_update moves it to, :unchanged, :fail or :abort, or a hash of those by level
   class FakeEcosystem
     LOCKFILE = "Gemfile.lock"
 
@@ -40,6 +40,8 @@ module UpdateSpec
       case outcome
       when :fail
         raise Secupdater::UpdateCommandFailed.new("bundle update failed", 1, "could not resolve #{name}")
+      when :abort
+        raise Secupdater::Error, "lockfile is frozen"
       when :unchanged
         []
       else
@@ -240,6 +242,30 @@ RSpec.describe Secupdater::Update do
       it "tries each level, then returns :failed" do
         expect(update.call([advisory("rack", "cve/1")])).to eq("rack" => :failed)
         expect(ecosystem.attempts.map(&:last)).to eq([:patch, :minor, :major])
+      end
+
+      it "logs the last level's failure once, as an error" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(log.string.scan(/could not resolve rack/).length).to eq(3)
+        expect(log.string).not_to include("major update:")
+      end
+    end
+
+    context "an error that isn't an update failure" do
+      let(:outcomes) { { "rack" => :abort, "nokogiri" => "2.0" } }
+
+      it "stops the run without trying other levels or gems" do
+        expect { update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")]) }
+          .to raise_error(Secupdater::Error, "lockfile is frozen")
+
+        expect(ecosystem.attempts).to eq([["rack", :patch]])
+      end
+
+      it "leaves the lockfile as it found it" do
+        expect { update.call([advisory("rack", "cve/1")]) }.to raise_error(Secupdater::Error)
+
+        expect(lockfile_on_disk).to eq(lockfile)
       end
     end
 

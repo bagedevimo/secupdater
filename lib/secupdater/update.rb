@@ -26,11 +26,13 @@ module Secupdater
 
       status = message = nil
 
-      ecosystem.update_levels.each do |level|
+      levels = ecosystem.update_levels
+
+      levels.each do |level|
         status, message = attempt_update(dep, advisories, level)
         return status unless message
 
-        logger.debug "#{level} update: #{message}"
+        logger.debug "#{level} update: #{message}" unless level == levels.last
       end
 
       if status == :failed
