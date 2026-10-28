@@ -3,7 +3,7 @@ require "secupdater/publisher"
 require "secupdater/publisher/gitlab"
 
 RSpec.describe Secupdater::Publisher::Gitlab do
-  subject(:gitlab) { described_class.new("access_token", "123", "main") }
+  subject(:gitlab) { described_class.new("access_token", "123", "main", "abc123") }
 
   let(:ecosystem) { Secupdater::Ecosystem::Rubygems.new }
   let(:dep) { Secupdater::DependencySpec.new("css_parser", "ruby", Gem::Version.new("1.0.0")) }
@@ -31,7 +31,7 @@ RSpec.describe Secupdater::Publisher::Gitlab do
       .with(
         body: {
           branch: "security/css_parser-1.1.0",
-          start_branch: "main",
+          start_sha: "abc123",
           commit_message: "Upgrade RubyGems dependency css_parser to version 1.1.0",
           actions: [{ action: "update", file_path: "Gemfile.lock", content: "abc" }]
         },

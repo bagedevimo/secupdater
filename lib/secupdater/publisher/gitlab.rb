@@ -4,12 +4,13 @@ require "json"
 module Secupdater
   class Publisher
     class Gitlab < Secupdater::Publisher
-      attr_reader :access_token, :project_id, :target_branch
+      attr_reader :access_token, :project_id, :target_branch, :start_sha
 
-      def initialize(access_token, project_id, target_branch)
+      def initialize(access_token, project_id, target_branch, start_sha)
         @access_token = access_token
         @project_id = project_id
         @target_branch = target_branch
+        @start_sha = start_sha
       end
 
       def run
@@ -18,7 +19,7 @@ module Secupdater
 
           data = {
             branch: reference,
-            start_branch: target_branch,
+            start_sha: start_sha,
             commit_message: title,
             actions: changes.map { { action: it.type, file_path: it.filename, content: it.content }.compact }
           }

@@ -1,4 +1,5 @@
 require "dry/cli"
+require "open3"
 
 module Secupdater
   module CLI
@@ -32,9 +33,18 @@ module Secupdater
         def publisher
           return unless ENV["SECUPDATER_GITLAB_TOKEN"]
 
-          Publisher::Gitlab.new(ENV["SECUPDATER_GITLAB_TOKEN"], ENV.fetch("CI_PROJECT_ID"), ENV.fetch("CI_DEFAULT_BRANCH"))
+          Publisher::Gitlab.new(ENV["SECUPDATER_GITLAB_TOKEN"], ENV.fetch("CI_PROJECT_ID"), ENV.fetch("CI_DEFAULT_BRANCH"), head_commit)
         rescue KeyError => e
           raise Secupdater::Error, "SECUPDATER_GITLAB_TOKEN is set but #{e.key} isn't"
+        end
+
+        # Update branches start from the commit the lockfile was read from, so
+        # their diff is only the bump, even if the target branch has moved on
+        def head_commit
+          output, status = Open3.capture2e("git", "rev-parse", "--verify", "HEAD")
+          raise Secupdater::Error, "Can't find the current git commit to base updates on: #{output}" unless status.success?
+
+          output.strip
         end
       end
 

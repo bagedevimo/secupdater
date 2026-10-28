@@ -55,6 +55,8 @@ RSpec.describe "secupdater end to end" do
         File.write("bin/bundle", "#!/bin/sh\ncp Gemfile.lock.after Gemfile.lock\n")
         File.chmod(0o755, "bin/bundle")
 
+        system("git init -q && git add Gemfile.lock && git -c user.name=test -c user.email=test@example.com commit -qm init", exception: true)
+
         ENV.delete("SECUPDATER_GITLAB_TOKEN")
         ENV.update(env.merge("PATH" => "#{dir}/bin:#{ENV['PATH']}"))
         example.run
@@ -76,6 +78,7 @@ RSpec.describe "secupdater end to end" do
       stub_request(:post, "https://gitlab.com/api/v4/projects/123/repository/commits")
         .with(body: hash_including(
           branch: "security/css_parser-1.1.0",
+          start_sha: `git rev-parse HEAD`.strip,
           actions: [{ action: "update", file_path: "Gemfile.lock", content: lockfile("1.1.0") }]
         ))
         .to_return(status: 201, body: "{}")

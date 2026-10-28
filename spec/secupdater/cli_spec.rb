@@ -6,6 +6,7 @@ RSpec.describe Secupdater::CLI::Commands::Run do
   let(:err) { StringIO.new }
   let(:runner) { instance_double(Secupdater::Runner, call: { "rack" => :published }) }
   let(:env) { {} }
+  let(:git_head) { ["abc123\n", instance_double(Process::Status, success?: true)] }
 
   def run_cli(*arguments)
     Dry::CLI.new(Secupdater::CLI::Commands).call(arguments: ["run", *arguments], out: out, err: err)
@@ -18,6 +19,7 @@ RSpec.describe Secupdater::CLI::Commands::Run do
   before do
     stub_const("ENV", env)
     allow(Secupdater::Runner).to receive(:new).and_return(runner)
+    allow(Open3).to receive(:capture2e).with("git", "rev-parse", "--verify", "HEAD").and_return(git_head)
   end
 
   describe "#call" do
@@ -49,14 +51,25 @@ RSpec.describe Secupdater::CLI::Commands::Run do
     context "with SECUPDATER_GITLAB_TOKEN set" do
       let(:env) { { "SECUPDATER_GITLAB_TOKEN" => "token", "CI_PROJECT_ID" => "123", "CI_DEFAULT_BRANCH" => "main" } }
 
-      it "publishes to GitLab using the CI project and default branch" do
+      it "publishes to GitLab using the CI project and default branch, starting from the checked out commit" do
         run_cli("--ecosystem=rubygems", "audit.json")
 
         expect(Secupdater::Runner).to have_received(:new).with(hash_including(
           publisher: an_instance_of(Secupdater::Publisher::Gitlab).and(
-            have_attributes(access_token: "token", project_id: "123", target_branch: "main")
+            have_attributes(access_token: "token", project_id: "123", target_branch: "main", start_sha: "abc123")
           )
         ))
+      end
+
+      context "outside a git checkout" do
+        let(:git_head) { ["fatal: not a git repository\n", instance_double(Process::Status, success?: false)] }
+
+        it "prints why and exits non-zero" do
+          expect_exit(1) { run_cli("--ecosystem=rubygems", "audit.json") }
+
+          expect(err.string).to include("Can't find the current git commit", "not a git repository")
+          expect(Secupdater::Runner).not_to have_received(:new)
+        end
       end
     end
 
