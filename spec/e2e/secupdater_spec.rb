@@ -74,6 +74,11 @@ RSpec.describe "secupdater end to end" do
         .to_return(status: 200, body: "[]")
     end
 
+    let!(:find_branch_stub) do
+      stub_request(:get, "https://gitlab.com/api/v4/projects/123/repository/branches/security%2Fcss_parser-1.1.0")
+        .to_return(status: 404, body: "{}")
+    end
+
     let!(:create_commit_stub) do
       stub_request(:post, "https://gitlab.com/api/v4/projects/123/repository/commits")
         .with(body: hash_including(

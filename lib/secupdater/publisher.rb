@@ -3,6 +3,9 @@ module Secupdater
     attr_reader :ecosystem, :bump, :advisories, :changes
 
     def initialize = raise NotImplementedError
+
+    # Returns [status, message], with a message explaining any status other
+    # than :published (e.g. :declined, :skipped or :up_to_date)
     def run = raise NotImplementedError
 
     def call(ecosystem, dependency_bump, advisories, changes)

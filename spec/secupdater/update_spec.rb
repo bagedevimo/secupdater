@@ -84,7 +84,7 @@ RSpec.describe Secupdater::Update do
   end
 
   before do
-    allow(publisher).to receive(:call) { |*args| published << args } if publisher
+    allow(publisher).to receive(:call) { |*args| published << args; [:published, nil] } if publisher
   end
 
   describe "#call(advisories)" do
@@ -254,6 +254,26 @@ RSpec.describe Secupdater::Update do
       end
     end
 
+    context "the publisher doesn't publish (e.g. the update was declined)" do
+      let(:outcomes) { { "rack" => { patch: "2.0.1", minor: "2.1" } } }
+
+      before do
+        allow(publisher).to receive(:call).and_return([:declined, "security/rack-2.0.1 was closed in !7"])
+      end
+
+      it "returns the publisher's status and warns with its message" do
+        expect(update.call([advisory("rack", "cve/1")])).to eq("rack" => :declined)
+
+        expect(log.string).to match(%r{^WARN security/rack-2\.0\.1 was closed in !7})
+      end
+
+      it "doesn't try the other levels" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(ecosystem.attempts).to eq([["rack", :patch]])
+      end
+    end
+
     context "publishing fails for the first gem" do
       let(:outcomes) { { "rack" => "2.1", "nokogiri" => "2.0" } }
 
@@ -262,6 +282,7 @@ RSpec.describe Secupdater::Update do
           raise Secupdater::PublishFailed, "branch already exists" if bump.dependency.name == "rack"
 
           published << bump
+          [:published, nil]
         end
       end
 

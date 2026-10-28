@@ -72,8 +72,9 @@ module Secupdater
 
       return [:resolved, nil] unless publisher
 
-      publisher.call(ecosystem, bump, advisories, file_changes)
-      [:published, nil]
+      status, message = publisher.call(ecosystem, bump, advisories, file_changes)
+      logger.warn message if message
+      [status, nil]
     rescue Secupdater::UnretryableUpdateFailed
       raise
     rescue Secupdater::UpdateCommandFailed => e
