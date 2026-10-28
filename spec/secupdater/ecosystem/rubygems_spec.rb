@@ -213,10 +213,33 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
 
       before { allow(Open3).to receive(:capture2e).and_return(["Could not find gem 'css_parser'", status]) }
 
-      it "raises UpdateCommandFailed with the integer exit code and combined output" do
+      it "raises a retryable UpdateCommandFailed with the integer exit code and combined output" do
         expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::UpdateCommandFailed) do
+          expect(it).not_to be_a(Secupdater::UnretryableUpdateFailed)
           expect(it.exit_code).to eq(1)
           expect(it.output).to eq("Could not find gem 'css_parser'")
+        end
+      end
+    end
+
+    {
+      10 => "Gemfile not found",
+      11 => "git source couldn't be fetched",
+      13 => "path source not found",
+      14 => "gemspec invalid",
+      17 => "HTTP error",
+      18 => "Ruby version mismatch"
+    }.each do |exit_code, reason|
+      context "command exits #{exit_code} (#{reason})" do
+        let(:status) { instance_double(Process::Status, success?: false, exitstatus: exit_code) }
+
+        before { allow(Open3).to receive(:capture2e).and_return([reason, status]) }
+
+        it "raises UnretryableUpdateFailed with the exit code and output" do
+          expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::UnretryableUpdateFailed) do
+            expect(it.exit_code).to eq(exit_code)
+            expect(it.output).to eq(reason)
+          end
         end
       end
     end

@@ -42,6 +42,9 @@ module Secupdater
       end
 
       status
+    rescue Secupdater::UnretryableUpdateFailed => e
+      logger.error "#{dep.name}: #{e.message}\n#{e.output}"
+      :failed
     rescue Secupdater::PublishFailed => e
       logger.error "#{dep.name}: #{e.message}"
       :failed
@@ -71,6 +74,8 @@ module Secupdater
 
       publisher.call(ecosystem, bump, advisories, file_changes)
       [:published, nil]
+    rescue Secupdater::UnretryableUpdateFailed
+      raise
     rescue Secupdater::UpdateCommandFailed => e
       [:failed, "#{dep.name}: #{e.message}\n#{e.output}"]
     ensure

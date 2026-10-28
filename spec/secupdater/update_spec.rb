@@ -5,7 +5,7 @@ require "stringio"
 require "tmpdir"
 
 module UpdateSpec
-  # outcomes: gem name => version try_update moves it to, :unchanged, :fail or :abort, or a hash of those by level
+  # outcomes: gem name => version try_update moves it to, :unchanged, :fail, :fail_unretryable or :abort, or a hash of those by level
   class FakeEcosystem
     LOCKFILE = "Gemfile.lock"
 
@@ -40,6 +40,8 @@ module UpdateSpec
       case outcome
       when :fail
         raise Secupdater::UpdateCommandFailed.new("bundle lock failed", 1, "could not resolve #{name}")
+      when :fail_unretryable
+        raise Secupdater::UnretryableUpdateFailed.new("bundle lock failed", 11, "could not fetch git source for #{name}")
       when :abort
         raise Secupdater::Error, "lockfile is frozen"
       when :unchanged
@@ -280,6 +282,34 @@ RSpec.describe Secupdater::Update do
         update.call([advisory("rack", "cve/1")])
 
         expect(log.string).to match(/^ERROR rack: branch already exists/)
+      end
+
+      it "leaves the lockfile as it found it" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(lockfile_on_disk).to eq(lockfile)
+      end
+    end
+
+    context "an update failure that another level won't fix, for the first gem" do
+      let(:outcomes) { { "rack" => :fail_unretryable, "nokogiri" => "2.0" } }
+
+      it "returns :failed for that gem without trying the other levels" do
+        expect(update.call([advisory("rack", "cve/1")])).to eq("rack" => :failed)
+        expect(ecosystem.attempts).to eq([["rack", :patch]])
+      end
+
+      it "logs the failure and its output once, as an error" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(log.string).to match(/^ERROR rack: bundle lock failed\ncould not fetch git source for rack/)
+        expect(log.string.scan(/could not fetch git source/).length).to eq(1)
+      end
+
+      it "continues to the next gem" do
+        update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])
+
+        expect(published.map { it[1].dependency.name }).to eq(["nokogiri"])
       end
 
       it "leaves the lockfile as it found it" do

@@ -33,6 +33,9 @@ module Secupdater
     end
   end
 
+  # An update command failure that trying another update level won't fix
+  class UnretryableUpdateFailed < UpdateCommandFailed; end
+
   class PublishFailed < Error; end
 
   def self.build_logger(log_level: :warn)

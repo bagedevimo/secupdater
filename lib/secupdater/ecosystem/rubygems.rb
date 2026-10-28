@@ -6,6 +6,9 @@ module Secupdater
   class Ecosystem
     class Rubygems < Secupdater::Ecosystem
       FROZEN_EXIT_CODE = 16
+      # Bundler failures that will happen the same way at every update level:
+      # GemfileNotFound, GitError, PathError, GemspecError, HTTPError, RubyVersionMismatch
+      UNRETRYABLE_EXIT_CODES = [10, 11, 13, 14, 17, 18].freeze
 
       def self.ecosystem_name = "RubyGems"
 
@@ -39,7 +42,9 @@ module Secupdater
         end
 
         unless status.success?
-          raise Secupdater::UpdateCommandFailed.new(
+          error_class = UNRETRYABLE_EXIT_CODES.include?(status.exitstatus) ? Secupdater::UnretryableUpdateFailed : Secupdater::UpdateCommandFailed
+
+          raise error_class.new(
             "bundle lock command returned #{status.exitstatus}",
             status.exitstatus,
             output
