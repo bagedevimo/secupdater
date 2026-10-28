@@ -32,7 +32,7 @@ module Secupdater
       end
 
       def run_update(names, level)
-        output, status = Open3.capture2e({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", *Array(names), "--conservative", "--#{level}", "--strict")
+        output, status = Open3.capture2e(bundle_env, "bundle", "lock", "--update", *Array(names), "--conservative", "--#{level}", "--strict")
 
         if status.exitstatus == FROZEN_EXIT_CODE
           raise Secupdater::Error, "bundle lock can't change Gemfile.lock (is BUNDLE_DEPLOYMENT set?)\n#{output}"
@@ -70,6 +70,24 @@ module Secupdater
         req = Gem::Requirement.create(requirement.split(/,\s*/))
         ver = Gem::Version.create(version)
         req.satisfied_by?(ver)
+      end
+
+      private
+
+      # When secupdater itself runs under `bundle exec` (e.g. an image whose
+      # entrypoint is `bundle exec`), undo what that set up so bundle lock works on
+      # the Gemfile and Gemfile.lock here. PATH is left alone, as callers may have
+      # changed it since.
+      def bundle_env
+        original = Bundler.original_env
+        rubyopt = original["RUBYOPT"]&.gsub(%r{-r\S*bundler/setup\S*}, "")&.strip
+
+        (Bundler::EnvironmentPreserver::BUNDLER_KEYS - %w[PATH MANPATH]).to_h { [it, original[it]] }.merge(
+          "BUNDLE_FROZEN" => "false",
+          "BUNDLE_GEMFILE" => File.expand_path("Gemfile"),
+          "BUNDLE_LOCKFILE" => nil,
+          "RUBYOPT" => rubyopt.nil? || rubyopt.empty? ? nil : rubyopt
+        )
       end
     end
   end

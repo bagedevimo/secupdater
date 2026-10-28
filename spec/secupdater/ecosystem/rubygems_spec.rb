@@ -128,6 +128,24 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
 
   describe "#try_update" do
     let(:status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+    let(:original_env) { {} }
+    let(:bundle_env) do
+      {
+        "BUNDLE_BIN_PATH" => nil,
+        "BUNDLE_FROZEN" => "false",
+        "BUNDLE_GEMFILE" => File.expand_path("Gemfile"),
+        "BUNDLE_LOCKFILE" => nil,
+        "BUNDLER_SETUP" => nil,
+        "BUNDLER_VERSION" => nil,
+        "GEM_HOME" => nil,
+        "GEM_PATH" => nil,
+        "RB_USER_INSTALL" => nil,
+        "RUBYLIB" => nil,
+        "RUBYOPT" => nil
+      }
+    end
+
+    before { allow(Bundler).to receive(:original_env).and_return(original_env) }
 
     context "command succeeds" do
       before do
@@ -140,7 +158,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       it "runs a strict, conservative, unfrozen bundle lock --update at the given level" do
         rubygems.try_update("css_parser", level: :minor)
 
-        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", "css_parser", "--conservative", "--minor", "--strict")
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "lock", "--update", "css_parser", "--conservative", "--minor", "--strict")
       end
 
       it "returns the lockfile change with its new and original content" do
@@ -164,7 +182,29 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       it "passes it as a single argument without going through a shell" do
         rubygems.try_update("css_parser; touch pwned", level: :patch)
 
-        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "lock", "--update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
+      end
+    end
+
+    context "secupdater itself running under bundle exec for another bundle" do
+      let(:original_env) do
+        {
+          "GEM_HOME" => "/usr/local/bundle",
+          "BUNDLE_GEMFILE" => "/elsewhere/Gemfile",
+          "BUNDLE_LOCKFILE" => "/elsewhere/Gemfile.lock",
+          "RUBYOPT" => "-W0 -rbundler/setup"
+        }
+      end
+
+      before { allow(Open3).to receive(:capture2e).and_return(["", status]) }
+
+      it "runs bundle lock with Bundler's settings from before bundle exec, on the Gemfile in the working directory" do
+        rubygems.try_update("css_parser", level: :patch)
+
+        expect(Open3).to have_received(:capture2e).with(
+          bundle_env.merge("GEM_HOME" => "/usr/local/bundle", "RUBYOPT" => "-W0"),
+          "bundle", "lock", "--update", "css_parser", "--conservative", "--patch", "--strict"
+        )
       end
     end
 
