@@ -109,7 +109,7 @@ RSpec.describe "secupdater end to end" do
     end
   end
 
-  context "real bundle update --local against fixture vendor/cache gems", :integration do
+  context "real bundle lock --update --local against fixture vendor/cache gems", :integration do
     it "bumps the gem in Gemfile.lock"
   end
 end

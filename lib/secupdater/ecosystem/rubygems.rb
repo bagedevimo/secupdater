@@ -32,15 +32,15 @@ module Secupdater
       end
 
       def run_update(names, level)
-        output, status = Open3.capture2e({ "BUNDLE_FROZEN" => "false" }, "bundle", "update", *Array(names), "--conservative", "--#{level}", "--strict")
+        output, status = Open3.capture2e({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", *Array(names), "--conservative", "--#{level}", "--strict")
 
         if status.exitstatus == FROZEN_EXIT_CODE
-          raise Secupdater::Error, "bundle update can't change Gemfile.lock (is BUNDLE_DEPLOYMENT set?)\n#{output}"
+          raise Secupdater::Error, "bundle lock can't change Gemfile.lock (is BUNDLE_DEPLOYMENT set?)\n#{output}"
         end
 
         unless status.success?
           raise Secupdater::UpdateCommandFailed.new(
-            "bundle update command returned #{status.exitstatus}",
+            "bundle lock command returned #{status.exitstatus}",
             status.exitstatus,
             output
           )

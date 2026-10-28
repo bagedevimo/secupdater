@@ -137,10 +137,10 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
         end
       end
 
-      it "runs a strict, conservative, unfrozen bundle update at the given level" do
+      it "runs a strict, conservative, unfrozen bundle lock --update at the given level" do
         rubygems.try_update("css_parser", level: :minor)
 
-        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "update", "css_parser", "--conservative", "--minor", "--strict")
+        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", "css_parser", "--conservative", "--minor", "--strict")
       end
 
       it "returns the lockfile change with its new and original content" do
@@ -164,7 +164,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       it "passes it as a single argument without going through a shell" do
         rubygems.try_update("css_parser; touch pwned", level: :patch)
 
-        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
+        expect(Open3).to have_received(:capture2e).with({ "BUNDLE_FROZEN" => "false" }, "bundle", "lock", "--update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
       end
     end
 

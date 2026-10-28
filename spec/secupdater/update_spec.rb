@@ -39,7 +39,7 @@ module UpdateSpec
 
       case outcome
       when :fail
-        raise Secupdater::UpdateCommandFailed.new("bundle update failed", 1, "could not resolve #{name}")
+        raise Secupdater::UpdateCommandFailed.new("bundle lock failed", 1, "could not resolve #{name}")
       when :abort
         raise Secupdater::Error, "lockfile is frozen"
       when :unchanged
@@ -134,7 +134,7 @@ RSpec.describe Secupdater::Update do
       end
     end
 
-    context "bundle update fails for the first gem" do
+    context "bundle lock fails for the first gem" do
       let(:outcomes) { { "rack" => :fail, "nokogiri" => "2.0" } }
 
       it "records the failure and continues to the next gem" do
