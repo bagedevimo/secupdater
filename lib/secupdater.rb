@@ -38,6 +38,7 @@ module Secupdater
   def self.build_logger(log_level: :warn)
     Dry.Logger(
       :secupdater,
+      stream: $stderr,
       template: "[%<severity>s] %<message>s",
       level: log_level
     )

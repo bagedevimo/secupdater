@@ -99,7 +99,7 @@ RSpec.describe "secupdater end to end" do
 
   context "same fixture project without GitLab configuration (dry run)" do
     it "exits 0, reports what would be updated and makes no HTTP requests" do
-      expect { run_cli("--verbose") }.to output(/css_parser from 1\.0\.0 to 1\.1\.0 \(patch\) would resolve/).to_stdout
+      expect { run_cli("--verbose") }.to output(/css_parser from 1\.0\.0 to 1\.1\.0 \(patch\) would resolve/).to_stderr
 
       expect(a_request(:any, //)).not_to have_been_made
       expect(File.read("Gemfile.lock")).to eq(lockfile("1.0.0"))
