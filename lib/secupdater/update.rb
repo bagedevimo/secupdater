@@ -16,9 +16,13 @@ module Secupdater
       missing = deps_needing_checking.keys - original.keys
       raise Secupdater::Error, "Advisories for dependencies not in the lockfile: #{missing.join(', ')}" if missing.any?
 
-      deps_needing_checking.to_h do |name, dep_advisories|
+      results = deps_needing_checking.to_h do |name, dep_advisories|
         [name, update_dependency(original[name], dep_advisories)]
       end
+
+      publisher&.finish(deps_needing_checking.keys)&.each { logger.info it }
+
+      results
     end
 
     def update_dependency(dep, advisories)

@@ -86,7 +86,7 @@ RSpec.describe Secupdater::Publisher::Gitlab do
         title: "Upgrade RubyGems dependency css_parser to version 1.1.0",
         description: "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n",
       }, headers: headers)
-      .to_return(status: 201, body: "{}")
+      .to_return(status: 201, body: { iid: 9 }.to_json)
   end
 
   def publish = gitlab.call(ecosystem, bump, advisories, changes)
@@ -240,6 +240,78 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           expect(a_request(:post, "#{project_api}/repository/commits")).not_to have_been_made
           expect(create_mr_stub).to have_been_requested
         end
+      end
+    end
+  end
+
+  describe "#finish(vulnerable_names)" do
+    let(:open_secupdater_merge_requests) { [] }
+
+    let!(:find_open_stub) do
+      stub_request(:get, "#{project_api}/merge_requests")
+        .with(query: { state: "opened", labels: "secupdater", target_branch: "main", per_page: "100" }, headers: headers)
+        .to_return(status: 200, body: open_secupdater_merge_requests.to_json)
+    end
+
+    let!(:note_stub) { stub_request(:post, %r{\A#{project_api}/merge_requests/\d+/notes\z}).to_return(status: 201, body: "{}") }
+    let!(:close_stub) do
+      stub_request(:put, %r{\A#{project_api}/merge_requests/\d+\z})
+        .with(body: { state_event: "close" })
+        .to_return(status: 200, body: "{}")
+    end
+
+    context "an older MR for a dependency this run opened a new MR for" do
+      let(:open_secupdater_merge_requests) do
+        [
+          { iid: 5, source_branch: "security/css_parser-1.0.5" },
+          { iid: 9, source_branch: "security/css_parser-1.1.0" }
+        ]
+      end
+
+      before { publish }
+
+      it "closes it, saying which MR superseded it" do
+        expect(gitlab.finish(["css_parser"])).to eq(["closed !5 (security/css_parser-1.0.5): Superseded by !9."])
+
+        expect(a_request(:post, "#{project_api}/merge_requests/5/notes").with(body: { body: "Superseded by !9." })).to have_been_made
+        expect(a_request(:put, "#{project_api}/merge_requests/5")).to have_been_made
+        expect(a_request(:put, //)).to have_been_made.once
+      end
+    end
+
+    context "an MR for a dependency that no longer has advisories" do
+      let(:open_secupdater_merge_requests) { [{ iid: 4, source_branch: "security/net-ssh-7.3.8" }] }
+
+      it "closes it, saying it's no longer needed" do
+        expect(gitlab.finish(["css_parser"])).to eq(
+          ["closed !4 (security/net-ssh-7.3.8): net-ssh no longer has any security advisories on main, so this is no longer needed."]
+        )
+
+        expect(a_request(:put, "#{project_api}/merge_requests/4")).to have_been_made
+        expect(a_request(:put, //)).to have_been_made.once
+      end
+    end
+
+    context "an MR for a dependency that still has advisories, but that this run didn't publish" do
+      let(:open_secupdater_merge_requests) { [{ iid: 4, source_branch: "security/net-ssh-7.3.8" }] }
+
+      it "leaves it alone" do
+        expect(gitlab.finish(["net-ssh"])).to eq([])
+
+        expect(a_request(:put, //)).not_to have_been_made
+        expect(a_request(:post, //)).not_to have_been_made
+      end
+    end
+
+    context "the MR this run opened or kept" do
+      let(:open_secupdater_merge_requests) { [{ iid: 9, source_branch: "security/css_parser-1.1.0" }] }
+
+      before { publish }
+
+      it "leaves it alone" do
+        expect(gitlab.finish(["css_parser"])).to eq([])
+
+        expect(a_request(:put, //)).not_to have_been_made
       end
     end
   end

@@ -11,6 +11,7 @@ module Secupdater
         @project_id = project_id
         @target_branch = target_branch
         @start_sha = start_sha
+        @current_merge_requests = {}
       end
 
       # Added to every MR secupdater opens. Closing one declines that version of
@@ -36,10 +37,36 @@ module Secupdater
             commit(http)
           end
 
-          return [:up_to_date, nil] if open_merge_request && up_to_date
+          if open_merge_request
+            remember(open_merge_request)
+            return [:up_to_date, nil] if up_to_date
+          else
+            remember(JSON.parse(create_merge_request(http).body))
+          end
 
-          create_merge_request(http) unless open_merge_request
           [:published, nil]
+        end
+      end
+
+      # Closes open secupdater MRs for a dependency that this run opened or kept a
+      # different MR for, or that no longer has any advisories. MRs for
+      # dependencies this run couldn't update are left alone.
+      def finish(vulnerable_names)
+        Net::HTTP.start("gitlab.com", 443, use_ssl: true) do |http|
+          find_open_secupdater_merge_requests(http).filter_map do |merge_request|
+            name = merge_request["source_branch"][REFERENCE_PATTERN, :name]
+            current = @current_merge_requests[name]
+
+            reason = if current && current != merge_request["iid"]
+              "Superseded by !#{current}."
+            elsif name && !vulnerable_names.include?(name)
+              "#{name} no longer has any security advisories on #{target_branch}, so this is no longer needed."
+            end
+            next unless reason
+
+            close_merge_request(http, merge_request["iid"], reason)
+            "closed !#{merge_request["iid"]} (#{merge_request["source_branch"]}): #{reason}"
+          end
         end
       end
 
@@ -55,6 +82,20 @@ module Secupdater
         data[:force] = true if force
 
         request(http, Net::HTTP::Post, "repository/commits", data)
+      end
+
+      def remember(merge_request)
+        @current_merge_requests[bump.dependency.name] = merge_request["iid"]
+      end
+
+      def find_open_secupdater_merge_requests(http)
+        query = URI.encode_www_form(state: "opened", labels: LABEL, target_branch: target_branch, per_page: 100)
+        JSON.parse(request(http, Net::HTTP::Get, "merge_requests?#{query}").body)
+      end
+
+      def close_merge_request(http, iid, reason)
+        request(http, Net::HTTP::Post, "merge_requests/#{iid}/notes", { body: reason })
+        request(http, Net::HTTP::Put, "merge_requests/#{iid}", { state_event: "close" })
       end
 
       def create_merge_request(http)

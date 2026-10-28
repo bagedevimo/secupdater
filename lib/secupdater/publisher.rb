@@ -17,6 +17,13 @@ module Secupdater
       run
     end
 
+    # Called once every dependency has been through #call, with the names of all
+    # the dependencies that have advisories. Returns messages about anything it
+    # tidied up.
+    def finish(vulnerable_names) = []
+
+    REFERENCE_PATTERN = %r{\Asecurity/(?<name>.+)-(?<version>[^-]+)\z}
+
     def reference = "security/#{bump.dependency.name}-#{bump.to}"
 
     def title = "Upgrade #{ecosystem.ecosystem_name} dependency #{bump.dependency.name} to version #{bump.to}"

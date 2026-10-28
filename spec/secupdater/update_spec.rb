@@ -85,6 +85,7 @@ RSpec.describe Secupdater::Update do
 
   before do
     allow(publisher).to receive(:call) { |*args| published << args; [:published, nil] } if publisher
+    allow(publisher).to receive(:finish).and_return([]) if publisher
   end
 
   describe "#call(advisories)" do
@@ -271,6 +272,30 @@ RSpec.describe Secupdater::Update do
         update.call([advisory("rack", "cve/1")])
 
         expect(ecosystem.attempts).to eq([["rack", :patch]])
+      end
+    end
+
+    context "once every gem has been through the publisher" do
+      let(:outcomes) { { "rack" => "2.1", "nokogiri" => :unchanged } }
+
+      before { allow(publisher).to receive(:finish).and_return(["closed !5 (security/rack-2.0): Superseded by !9."]) }
+
+      it "lets the publisher tidy up, with the names of every gem that has advisories" do
+        update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])
+
+        expect(publisher).to have_received(:finish).with(["rack", "nokogiri"])
+      end
+
+      it "logs what it tidied up" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(log.string).to match(%r{^INFO closed !5 \(security/rack-2\.0\): Superseded by !9\.})
+      end
+
+      it "does so even when there are no advisories, so MRs whose fixes have landed get closed" do
+        expect(update.call([])).to eq({})
+
+        expect(publisher).to have_received(:finish).with([])
       end
     end
 

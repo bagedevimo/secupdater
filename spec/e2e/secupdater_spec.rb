@@ -70,7 +70,14 @@ RSpec.describe "secupdater end to end" do
     let(:env) { { "SECUPDATER_GITLAB_TOKEN" => "token", "CI_PROJECT_ID" => "123", "CI_DEFAULT_BRANCH" => "main" } }
 
     let!(:find_mr_stub) do
-      stub_request(:get, %r{\Ahttps://gitlab.com/api/v4/projects/123/merge_requests\?})
+      stub_request(:get, "https://gitlab.com/api/v4/projects/123/merge_requests")
+        .with(query: hash_including(source_branch: "security/css_parser-1.1.0"))
+        .to_return(status: 200, body: "[]")
+    end
+
+    let!(:find_open_secupdater_mrs_stub) do
+      stub_request(:get, "https://gitlab.com/api/v4/projects/123/merge_requests")
+        .with(query: hash_including(state: "opened", labels: "secupdater"))
         .to_return(status: 200, body: "[]")
     end
 
@@ -99,6 +106,7 @@ RSpec.describe "secupdater end to end" do
       expect { run_cli }.not_to raise_error
 
       expect(find_mr_stub).to have_been_requested.once
+      expect(find_open_secupdater_mrs_stub).to have_been_requested.once
       expect(create_commit_stub).to have_been_requested.once
       expect(create_mr_stub).to have_been_requested.once
       expect(File.read("Gemfile.lock")).to eq(lockfile("1.0.0"))
