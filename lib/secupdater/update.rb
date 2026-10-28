@@ -42,6 +42,9 @@ module Secupdater
       end
 
       status
+    rescue Secupdater::PublishFailed => e
+      logger.error "#{dep.name}: #{e.message}"
+      :failed
     end
 
     private

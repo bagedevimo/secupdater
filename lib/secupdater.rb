@@ -33,6 +33,8 @@ module Secupdater
     end
   end
 
+  class PublishFailed < Error; end
+
   def self.build_logger(log_level: :warn)
     Dry.Logger(
       :secupdater,

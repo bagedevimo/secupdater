@@ -83,9 +83,9 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           .to_return(status: 400, body: '{"message":"A branch called security/css_parser-1.1.0 already exists"}')
       end
 
-      it "raises Secupdater::Error including the response body" do
+      it "raises Secupdater::PublishFailed including the response body" do
         expect { gitlab.call(ecosystem, bump, advisories, changes) }
-          .to raise_error(Secupdater::Error, /400.*already exists/)
+          .to raise_error(Secupdater::PublishFailed, /400.*already exists/)
 
         expect(create_mr_stub).not_to have_been_requested
       end

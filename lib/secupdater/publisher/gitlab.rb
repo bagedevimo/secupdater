@@ -57,7 +57,7 @@ module Secupdater
         res = http.request(req)
 
         unless res.is_a?(Net::HTTPSuccess)
-          raise Secupdater::Error, "GitLab #{req.method} #{req.path} returned #{res.code}: #{res.body}"
+          raise Secupdater::PublishFailed, "GitLab #{req.method} #{req.path} returned #{res.code}: #{res.body}"
         end
 
         res

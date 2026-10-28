@@ -252,6 +252,43 @@ RSpec.describe Secupdater::Update do
       end
     end
 
+    context "publishing fails for the first gem" do
+      let(:outcomes) { { "rack" => "2.1", "nokogiri" => "2.0" } }
+
+      before do
+        allow(publisher).to receive(:call) do |_, bump, *|
+          raise Secupdater::PublishFailed, "branch already exists" if bump.dependency.name == "rack"
+
+          published << bump
+        end
+      end
+
+      it "returns :failed for that gem and continues to the next gem" do
+        results = update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])
+
+        expect(results).to eq("rack" => :failed, "nokogiri" => :published)
+        expect(published.map { it.dependency.name }).to eq(["nokogiri"])
+      end
+
+      it "doesn't try the other levels" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(ecosystem.attempts).to eq([["rack", :patch]])
+      end
+
+      it "logs the failure as an error" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(log.string).to match(/^ERROR rack: branch already exists/)
+      end
+
+      it "leaves the lockfile as it found it" do
+        update.call([advisory("rack", "cve/1")])
+
+        expect(lockfile_on_disk).to eq(lockfile)
+      end
+    end
+
     context "an error that isn't an update failure" do
       let(:outcomes) { { "rack" => :abort, "nokogiri" => "2.0" } }
 
