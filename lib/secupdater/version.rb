@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module Secupdater
-  VERSION = "0.2.0alpha1"
+  VERSION = "0.2.0alpha2"
 end
