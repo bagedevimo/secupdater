@@ -35,7 +35,7 @@ module Secupdater
       end
 
       def run_update(names, level)
-        output, status = Open3.capture2e(bundle_env, "bundle", "lock", "--update", *Array(names), "--conservative", "--#{level}", "--strict")
+        output, status = Open3.capture2e(bundle_env, "bundle", *bundler_version_arg, "lock", "--update", *Array(names), "--conservative", "--#{level}", "--strict")
 
         if status.exitstatus == FROZEN_EXIT_CODE
           raise Secupdater::Error, "bundle lock can't change Gemfile.lock (is BUNDLE_DEPLOYMENT set?)\n#{output}"
@@ -78,6 +78,24 @@ module Secupdater
       end
 
       private
+
+      def bundler_version_arg
+        version = Bundler::LockfileParser.new(Bundler.read_file("Gemfile.lock")).bundler_version
+        return [] unless version
+
+        install_bundler(version)
+        ["_#{version}_"]
+      end
+
+      def install_bundler(version)
+        @installed_bundlers ||= Set.new
+        return if @installed_bundlers.include?(version)
+
+        output, status = Open3.capture2e(bundle_env, "gem", "install", "bundler", "--version", version.to_s, "--conservative", "--no-document")
+        raise Secupdater::Error, "Couldn't install Bundler #{version}, which Gemfile.lock was bundled with\n#{output}" unless status.success?
+
+        @installed_bundlers << version
+      end
 
       # When secupdater itself runs under `bundle exec` (e.g. an image whose
       # entrypoint is `bundle exec`), undo what that set up so bundle lock works on

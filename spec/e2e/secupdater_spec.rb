@@ -54,6 +54,8 @@ RSpec.describe "secupdater end to end" do
         FileUtils.mkdir("bin")
         File.write("bin/bundle", "#!/bin/sh\ncp Gemfile.lock.after Gemfile.lock\n")
         File.chmod(0o755, "bin/bundle")
+        File.write("bin/gem", "#!/bin/sh\n")
+        File.chmod(0o755, "bin/gem")
 
         system("git init -q && git add Gemfile.lock && git -c user.name=test -c user.email=test@example.com commit -qm init", exception: true)
 

@@ -145,11 +145,65 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       }
     end
 
-    before { allow(Bundler).to receive(:original_env).and_return(original_env) }
+    let(:install_status) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+
+    before do
+      allow(Bundler).to receive(:original_env).and_return(original_env)
+      allow(Open3).to receive(:capture2e).with(anything, "gem", any_args).and_return(["", install_status])
+    end
+
+    context "lockfile bundled with a Bundler other than the one running" do
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["", status]) }
+
+      it "installs that Bundler if it's missing, then runs bundle lock with it" do
+        rubygems.try_update("css_parser", level: :patch)
+
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "gem", "install", "bundler", "--version", "2.5.0", "--conservative", "--no-document").ordered
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "_2.5.0_", "lock", any_args).ordered
+      end
+
+      it "only installs it once per run" do
+        rubygems.try_update("css_parser", level: :patch)
+        rubygems.try_update("css_parser", level: :minor)
+
+        expect(Open3).to have_received(:capture2e).with(anything, "gem", any_args).once
+      end
+    end
+
+    context "lockfile without BUNDLED WITH" do
+      before do
+        File.write("Gemfile.lock", lockfile("1.0.0").sub(/\nBUNDLED WITH\n.*\n\z/, ""))
+        allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["", status])
+      end
+
+      it "runs bundle lock with whichever Bundler RubyGems picks, without installing one" do
+        rubygems.try_update("css_parser", level: :patch)
+
+        expect(Open3).not_to have_received(:capture2e).with(anything, "gem", any_args)
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "lock", "--update", "css_parser", "--conservative", "--patch", "--strict")
+      end
+    end
+
+    context "locked Bundler can't be installed" do
+      let(:install_status) { instance_double(Process::Status, success?: false, exitstatus: 2) }
+
+      before do
+        allow(Open3).to receive(:capture2e).with(anything, "gem", any_args).and_return(["Could not find a valid gem 'bundler' (= 2.5.0)", install_status])
+        allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args)
+      end
+
+      it "raises Secupdater::Error rather than UpdateCommandFailed, so the run stops, and doesn't run bundle lock" do
+        expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::Error) do
+          expect(it).not_to be_a(Secupdater::UpdateCommandFailed)
+          expect(it.message).to include("Bundler 2.5.0", "Could not find a valid gem")
+        end
+        expect(Open3).not_to have_received(:capture2e).with(anything, "bundle", any_args)
+      end
+    end
 
     context "command succeeds" do
       before do
-        allow(Open3).to receive(:capture2e) do
+        allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args) do
           File.write("Gemfile.lock", lockfile("1.1.0"))
           ["Bundle updated!", status]
         end
@@ -158,7 +212,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       it "runs a strict, conservative, unfrozen bundle lock --update at the given level" do
         rubygems.try_update("css_parser", level: :minor)
 
-        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "lock", "--update", "css_parser", "--conservative", "--minor", "--strict")
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "_2.5.0_", "lock", "--update", "css_parser", "--conservative", "--minor", "--strict")
       end
 
       it "returns the lockfile change with its new and original content" do
@@ -169,7 +223,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
     end
 
     context "command succeeds without changing anything" do
-      before { allow(Open3).to receive(:capture2e).and_return(["Bundle updated!", status]) }
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["Bundle updated!", status]) }
 
       it "returns no file changes" do
         expect(rubygems.try_update("css_parser", level: :patch)).to eq([])
@@ -177,12 +231,12 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
     end
 
     context "gem name containing shell metacharacters" do
-      before { allow(Open3).to receive(:capture2e).and_return(["", status]) }
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["", status]) }
 
       it "passes it as a single argument without going through a shell" do
         rubygems.try_update("css_parser; touch pwned", level: :patch)
 
-        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "lock", "--update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
+        expect(Open3).to have_received(:capture2e).with(bundle_env, "bundle", "_2.5.0_", "lock", "--update", "css_parser; touch pwned", "--conservative", "--patch", "--strict")
       end
     end
 
@@ -196,14 +250,14 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
         }
       end
 
-      before { allow(Open3).to receive(:capture2e).and_return(["", status]) }
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["", status]) }
 
       it "runs bundle lock with Bundler's settings from before bundle exec, on the Gemfile in the working directory" do
         rubygems.try_update("css_parser", level: :patch)
 
         expect(Open3).to have_received(:capture2e).with(
           bundle_env.merge("GEM_HOME" => "/usr/local/bundle", "RUBYOPT" => "-W0"),
-          "bundle", "lock", "--update", "css_parser", "--conservative", "--patch", "--strict"
+          "bundle", "_2.5.0_", "lock", "--update", "css_parser", "--conservative", "--patch", "--strict"
         )
       end
     end
@@ -211,7 +265,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
     context "command exits 1" do
       let(:status) { instance_double(Process::Status, success?: false, exitstatus: 1) }
 
-      before { allow(Open3).to receive(:capture2e).and_return(["Could not find gem 'css_parser'", status]) }
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["Could not find gem 'css_parser'", status]) }
 
       it "raises a retryable UpdateCommandFailed with the integer exit code and combined output" do
         expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::UpdateCommandFailed) do
@@ -233,7 +287,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
       context "command exits #{exit_code} (#{reason})" do
         let(:status) { instance_double(Process::Status, success?: false, exitstatus: exit_code) }
 
-        before { allow(Open3).to receive(:capture2e).and_return([reason, status]) }
+        before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return([reason, status]) }
 
         it "raises UnretryableUpdateFailed with the exit code and output" do
           expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::UnretryableUpdateFailed) do
@@ -247,7 +301,7 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
     context "command exits 16 (frozen lockfile)" do
       let(:status) { instance_double(Process::Status, success?: false, exitstatus: 16) }
 
-      before { allow(Open3).to receive(:capture2e).and_return(["frozen mode is set", status]) }
+      before { allow(Open3).to receive(:capture2e).with(anything, "bundle", any_args).and_return(["frozen mode is set", status]) }
 
       it "raises Secupdater::Error rather than UpdateCommandFailed, so the run stops" do
         expect { rubygems.try_update("css_parser", level: :patch) }.to raise_error(Secupdater::Error) do
