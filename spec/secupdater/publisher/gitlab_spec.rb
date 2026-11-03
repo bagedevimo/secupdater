@@ -53,6 +53,14 @@ RSpec.describe Secupdater::Publisher::Gitlab do
       .to_return(status: 200, body: { commits: branch_commits }.to_json)
   end
 
+  let(:target_diffs_since_branch) { [] }
+
+  let!(:target_moved_on_stub) do
+    stub_request(:get, "#{project_api}/repository/compare")
+      .with(query: { from: "security/css_parser-1.1.0", to: "abc123" })
+      .to_return(status: 200, body: { commits: [], diffs: target_diffs_since_branch }.to_json)
+  end
+
   let!(:user_stub) do
     stub_request(:get, "#{api}/user")
       .to_return(status: 200, body: { email: bot_email, commit_email: bot_email, public_email: "" }.to_json)
@@ -182,6 +190,27 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           expect(publish).to eq([:up_to_date, nil])
 
           expect(a_request(:post, //)).not_to have_been_made
+        end
+
+        context "but main has changed other files since the branch was cut" do
+          let(:target_diffs_since_branch) { [{ old_path: "app/models/user.rb", new_path: "app/models/user.rb" }] }
+
+          it "leaves it alone" do
+            expect(publish).to eq([:up_to_date, nil])
+
+            expect(a_request(:post, //)).not_to have_been_made
+          end
+        end
+
+        context "but main's Gemfile.lock has changed since the branch was cut (e.g. another MR made some of the same bumps)" do
+          let(:target_diffs_since_branch) { [{ old_path: "Gemfile.lock", new_path: "Gemfile.lock" }] }
+
+          it "replaces the branch's commit, from start_sha, so it doesn't show changes main already has" do
+            expect(publish).to eq([:published, nil])
+
+            expect(force_commit_stub).to have_been_requested
+            expect(create_mr_stub).not_to have_been_requested
+          end
         end
       end
 

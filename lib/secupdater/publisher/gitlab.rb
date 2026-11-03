@@ -31,7 +31,7 @@ module Secupdater
             others = other_authors(http)
             return [:skipped, "#{reference} has commits from #{others.join(", ")}, so it won't be updated"] if others.any?
 
-            up_to_date = branch_has_changes?(http)
+            up_to_date = branch_has_changes?(http) && !target_manifests_moved_on?(http)
             commit(http, force: true) unless up_to_date
           else
             commit(http)
@@ -141,6 +141,17 @@ module Secupdater
           res = request(http, Net::HTTP::Get, "repository/files/#{URI.encode_www_form_component(change.filename)}/raw?#{query}", allow_missing: true)
           res&.body == change.content
         end
+      end
+
+      # Whether a manifest has changed on the target branch since the branch was
+      # cut from it. The update can come out the same even then (e.g. when another
+      # MR made some of the same bumps), but the branch would show changes the
+      # target already has, and may conflict.
+      def target_manifests_moved_on?(http)
+        query = URI.encode_www_form(from: reference, to: start_sha)
+        diffs = JSON.parse(request(http, Net::HTTP::Get, "repository/compare?#{query}").body)["diffs"]
+
+        diffs.any? { ecosystem.manifest_paths.intersect?(it.values_at("old_path", "new_path")) }
       end
 
       def request(http, type, path, data = nil, allow_missing: false)
