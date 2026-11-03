@@ -75,6 +75,21 @@ RSpec.describe Secupdater::Ecosystem::Rubygems do
         expect(rubygems.parse_advisories(StringIO.new(report.to_json)).map(&:report_id)).to eq(["RUBYSEC-2024-1"])
       end
     end
+
+    context "the same advisory reported once per platform the gem is locked for" do
+      let(:result) do
+        {
+          type: "unpatched_gem",
+          gem: { name: "nokogiri", version: "1.19.4" },
+          advisory: { id: "GHSA-3w22-6jfg-527w", ghsa: "3w22-6jfg-527w", patched_versions: [">= 1.19.5"] }
+        }
+      end
+      let(:report) { { results: [result, result] } }
+
+      it "returns it once" do
+        expect(rubygems.parse_advisories(StringIO.new(report.to_json)).map(&:report_id)).to eq(["ghsa/3w22-6jfg-527w"])
+      end
+    end
   end
 
   describe "#snapshot" do

@@ -68,7 +68,7 @@ module Secupdater
           advisory_id = advisory["id"] if advisory_id.empty?
 
           SecurityAdvisory.new(result["gem"]["name"], advisory_id, advisory["patched_versions"])
-        end
+        end.uniq # bundle-audit reports an advisory once per platform the gem is locked for
       end
 
       def satisfies_requirement?(version, requirement)
