@@ -29,7 +29,10 @@ module Secupdater
 
           if branch_exists?(http)
             others = other_authors(http)
-            return [:skipped, "#{reference} has commits from #{others.join(", ")}, so it won't be updated"] if others.any?
+            if others.any?
+              explain_skipping(http, open_merge_request, others) if open_merge_request
+              return [:skipped, "#{reference} has commits from #{others.join(", ")}, so it won't be updated"]
+            end
 
             up_to_date = branch_has_changes?(http) && !target_manifests_moved_on?(http)
             commit(http, force: true) unless up_to_date
@@ -102,6 +105,26 @@ module Secupdater
         JSON.parse(request(http, Net::HTTP::Get, "merge_requests?#{query}").body)
       end
 
+      # Hidden in the rendered comment; marks the comment so it's only posted once
+      SKIPPING_MARKER = "<!-- secupdater:skipping -->"
+
+      # Says on the MR, once, that secupdater has stopped updating it, so whoever
+      # committed knows rebasing and refreshing it is now up to them
+      def explain_skipping(http, merge_request, others)
+        notes_path = "merge_requests/#{merge_request["iid"]}/notes"
+        notes = JSON.parse(request(http, Net::HTTP::Get, "#{notes_path}?#{URI.encode_www_form(per_page: 100)}").body)
+        return if notes.any? { it.dig("author", "id") == own_user(http)["id"] && it["body"].to_s.include?(SKIPPING_MARKER) }
+
+        body = <<~BODY.chomp
+          #{SKIPPING_MARKER}
+          This branch has commits from #{others.join(", ")}, so secupdater won't update it any more, \
+          including rebasing it when `#{target_branch}` changes.
+
+          To hand it back, delete the branch, or force-push it without those commits, and secupdater will take it over on its next run.
+        BODY
+        request(http, Net::HTTP::Post, notes_path, { body: })
+      end
+
       def close_merge_request(http, iid, reason)
         request(http, Net::HTTP::Post, "merge_requests/#{iid}/notes", { body: reason })
         request(http, Net::HTTP::Put, "merge_requests/#{iid}", { state_event: "close" })
@@ -138,10 +161,12 @@ module Secupdater
       end
 
       def own_emails(http)
-        @own_emails ||= begin
-          user = JSON.parse(api_request(http, Net::HTTP::Get, "user").body)
-          user.values_at("email", "commit_email", "public_email").reject { it.nil? || it.empty? }
-        end
+        own_user(http).values_at("email", "commit_email", "public_email").reject { it.nil? || it.empty? }
+      end
+
+      # Whoever owns the access token
+      def own_user(http)
+        @own_user ||= JSON.parse(api_request(http, Net::HTTP::Get, "user").body)
       end
 
       def branch_has_changes?(http)

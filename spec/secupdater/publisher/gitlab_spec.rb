@@ -63,7 +63,7 @@ RSpec.describe Secupdater::Publisher::Gitlab do
 
   let!(:user_stub) do
     stub_request(:get, "#{api}/user")
-      .to_return(status: 200, body: { email: bot_email, commit_email: bot_email, public_email: "" }.to_json)
+      .to_return(status: 200, body: { id: 42, email: bot_email, commit_email: bot_email, public_email: "" }.to_json)
   end
 
   let!(:branch_file_stub) do
@@ -273,10 +273,72 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           ]
         end
 
+        let(:existing_notes) { [] }
+
+        let!(:notes_stub) do
+          stub_request(:get, "#{project_api}/merge_requests/7/notes")
+            .with(query: { per_page: "100" }, headers: headers)
+            .to_return(status: 200, body: existing_notes.to_json)
+        end
+
+        let!(:comment_stub) do
+          stub_request(:post, "#{project_api}/merge_requests/7/notes")
+            .with(body: { body: <<~BODY.chomp }, headers: headers)
+              <!-- secupdater:skipping -->
+              This branch has commits from Jo Bloggs, so secupdater won't update it any more, including rebasing it when `main` changes.
+
+              To hand it back, delete the branch, or force-push it without those commits, and secupdater will take it over on its next run.
+            BODY
+            .to_return(status: 201, body: "{}")
+        end
+
         it "leaves the branch alone and says why" do
           expect(publish).to eq([:skipped, "security/css_parser-1.1.0 has commits from Jo Bloggs, so it won't be updated"])
 
-          expect(a_request(:post, //)).not_to have_been_made
+          expect(a_request(:post, "#{project_api}/repository/commits")).not_to have_been_made
+          expect(a_request(:put, //)).not_to have_been_made
+        end
+
+        it "comments on the MR to say secupdater has stopped updating it" do
+          publish
+
+          expect(comment_stub).to have_been_requested
+        end
+
+        context "when it has already said so" do
+          let(:existing_notes) do
+            [
+              { author: { id: 7 }, body: "Thanks, I've fixed the spec" },
+              { author: { id: 42 }, body: "<!-- secupdater:skipping -->\nThis branch has commits from Jo Bloggs…" }
+            ]
+          end
+
+          it "doesn't say it again" do
+            expect(publish.first).to eq(:skipped)
+
+            expect(a_request(:post, //)).not_to have_been_made
+          end
+        end
+
+        context "when only someone else has posted the marker (e.g. quoting it)" do
+          let(:existing_notes) { [{ author: { id: 7 }, body: "> <!-- secupdater:skipping -->" }] }
+
+          it "still says so" do
+            publish
+
+            expect(comment_stub).to have_been_requested
+          end
+        end
+      end
+
+      context "a branch without an MR, with a commit from someone else" do
+        let(:existing_merge_requests) { [] }
+        let(:branch_commits) { [{ author_name: "Jo Bloggs", author_email: "jo@example.com" }] }
+
+        it "skips it without commenting anywhere" do
+          expect(publish.first).to eq(:skipped)
+
+          expect(a_request(:any, %r{/notes})).not_to have_been_made
         end
       end
 
