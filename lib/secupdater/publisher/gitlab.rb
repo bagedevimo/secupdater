@@ -39,7 +39,12 @@ module Secupdater
 
           if open_merge_request
             remember(open_merge_request)
-            return [:up_to_date, nil] if up_to_date
+
+            # e.g. when this update has since absorbed another dependency's advisories
+            described = open_merge_request["description"] == description
+            request(http, Net::HTTP::Put, "merge_requests/#{open_merge_request["iid"]}", { description: description }) unless described
+
+            return [:up_to_date, nil] if up_to_date && described
           else
             remember(JSON.parse(create_merge_request(http).body))
           end
@@ -84,8 +89,12 @@ module Secupdater
         request(http, Net::HTTP::Post, "repository/commits", data)
       end
 
+      # Against every dependency the MR fixes advisories for, so finish closes
+      # their own MRs once another update has absorbed them
       def remember(merge_request)
-        @current_merge_requests[bump.dependency.name] = merge_request["iid"]
+        [bump.dependency.name, *advisories.map(&:name)].uniq.each do
+          @current_merge_requests[it] = merge_request["iid"]
+        end
       end
 
       def find_open_secupdater_merge_requests(http)

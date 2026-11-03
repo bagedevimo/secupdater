@@ -109,6 +109,30 @@ RSpec.describe Secupdater::Publisher::Gitlab do
       end
     end
 
+    context "with advisories for other gems the update also fixes" do
+      let(:advisories) do
+        [
+          Secupdater::SecurityAdvisory.new("css_parser", "cve/2024-0001", [">= 1.1.0"]),
+          Secupdater::SecurityAdvisory.new("addressable", "ghsa/abcd-efgh", [">= 2.9.0"])
+        ]
+      end
+
+      let!(:create_mr_stub) do
+        stub_request(:post, "#{project_api}/merge_requests")
+          .with(body: hash_including(
+            source_branch: "security/css_parser-1.1.0",
+            description: "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n* ghsa/abcd-efgh (addressable)\n"
+          ))
+          .to_return(status: 201, body: { iid: 9 }.to_json)
+      end
+
+      it "names the other gem against its advisories" do
+        publish
+
+        expect(create_mr_stub).to have_been_requested
+      end
+    end
+
     context "deleting a file" do
       let(:changes) { [Secupdater::FileChange.new("Gemfile.lock", "delete", nil, "xyz")] }
 
@@ -180,11 +204,29 @@ RSpec.describe Secupdater::Publisher::Gitlab do
     end
 
     context "an open MR, labelled or not" do
-      let(:existing_merge_requests) { [{ iid: 7, state: "opened", labels: [] }, { iid: 3, state: "closed", labels: ["secupdater"] }] }
+      let(:description) { "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n" }
+      let(:existing_merge_requests) { [{ iid: 7, state: "opened", labels: [], description: }, { iid: 3, state: "closed", labels: ["secupdater"] }] }
       let(:branch_exists) { true }
+
+      let!(:update_description_stub) do
+        stub_request(:put, "#{project_api}/merge_requests/7")
+          .with(body: { description: "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n" }, headers: headers)
+          .to_return(status: 200, body: "{}")
+      end
 
       context "whose branch already has these changes" do
         let(:branch_lockfile) { "abc" }
+
+        context "but whose description lists different advisories (e.g. the update has since absorbed another gem's)" do
+          let(:description) { "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2023-9999\n" }
+
+          it "updates the description, without committing" do
+            expect(publish).to eq([:published, nil])
+
+            expect(update_description_stub).to have_been_requested
+            expect(a_request(:post, "#{project_api}/repository/commits")).not_to have_been_made
+          end
+        end
 
         it "leaves it alone" do
           expect(publish).to eq([:up_to_date, nil])
@@ -304,6 +346,32 @@ RSpec.describe Secupdater::Publisher::Gitlab do
 
         expect(a_request(:post, "#{project_api}/merge_requests/5/notes").with(body: { body: "Superseded by !9." })).to have_been_made
         expect(a_request(:put, "#{project_api}/merge_requests/5")).to have_been_made
+        expect(a_request(:put, //)).to have_been_made.once
+      end
+    end
+
+    context "an MR for a dependency whose advisories this run's MR for another dependency also fixes" do
+      let(:advisories) do
+        [
+          Secupdater::SecurityAdvisory.new("css_parser", "cve/2024-0001", [">= 1.1.0"]),
+          Secupdater::SecurityAdvisory.new("addressable", "ghsa/abcd-efgh", [">= 2.9.0"])
+        ]
+      end
+      let(:open_secupdater_merge_requests) do
+        [
+          { iid: 4, source_branch: "security/addressable-2.9.0" },
+          { iid: 9, source_branch: "security/css_parser-1.1.0" }
+        ]
+      end
+
+      before do
+        stub_request(:post, "#{project_api}/merge_requests").to_return(status: 201, body: { iid: 9 }.to_json)
+        publish
+      end
+
+      it "closes it, saying which MR superseded it" do
+        expect(gitlab.finish(["addressable", "css_parser"])).to eq(["closed !4 (security/addressable-2.9.0): Superseded by !9."])
+
         expect(a_request(:put, //)).to have_been_made.once
       end
     end

@@ -30,7 +30,10 @@ module Secupdater
 
     def description
       heading = "Upgrade #{ecosystem.ecosystem_name} dependency #{bump.dependency.name} to version #{bump.to} to address the following security advisories:"
-      items = advisories.map { "* #{it.report_id}" }.join("\n")
+      # Advisories for other dependencies this update also fixes say which one
+      items = advisories.map do |advisory|
+        advisory.name == bump.dependency.name ? "* #{advisory.report_id}" : "* #{advisory.report_id} (#{advisory.name})"
+      end.join("\n")
       "#{heading}\n\n#{items}\n"
     end
     
