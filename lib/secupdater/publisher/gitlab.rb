@@ -29,9 +29,12 @@ module Secupdater
 
           if branch_exists?(http)
             others = other_authors(http)
-            return [:skipped, "#{reference} has commits from #{others.join(", ")}, so it won't be updated"] if others.any?
+            if others.any?
+              explain_skipping(http, open_merge_request, others) if open_merge_request
+              return [:skipped, "#{reference} has commits from #{others.join(", ")}, so it won't be updated"]
+            end
 
-            up_to_date = branch_has_changes?(http)
+            up_to_date = branch_has_changes?(http) && !target_manifests_moved_on?(http)
             commit(http, force: true) unless up_to_date
           else
             commit(http)
@@ -39,7 +42,12 @@ module Secupdater
 
           if open_merge_request
             remember(open_merge_request)
-            return [:up_to_date, nil] if up_to_date
+
+            # e.g. when this update has since absorbed another dependency's advisories
+            described = open_merge_request["description"] == description
+            request(http, Net::HTTP::Put, "merge_requests/#{open_merge_request["iid"]}", { description: description }) unless described
+
+            return [:up_to_date, nil] if up_to_date && described
           else
             remember(JSON.parse(create_merge_request(http).body))
           end
@@ -84,13 +92,37 @@ module Secupdater
         request(http, Net::HTTP::Post, "repository/commits", data)
       end
 
+      # Against every dependency the MR fixes advisories for, so finish closes
+      # their own MRs once another update has absorbed them
       def remember(merge_request)
-        @current_merge_requests[bump.dependency.name] = merge_request["iid"]
+        [bump.dependency.name, *advisories.map(&:name)].uniq.each do
+          @current_merge_requests[it] = merge_request["iid"]
+        end
       end
 
       def find_open_secupdater_merge_requests(http)
         query = URI.encode_www_form(state: "opened", labels: LABEL, target_branch: target_branch, per_page: 100)
         JSON.parse(request(http, Net::HTTP::Get, "merge_requests?#{query}").body)
+      end
+
+      # Hidden in the rendered comment; marks the comment so it's only posted once
+      SKIPPING_MARKER = "<!-- secupdater:skipping -->"
+
+      # Says on the MR, once, that secupdater has stopped updating it, so whoever
+      # committed knows rebasing and refreshing it is now up to them
+      def explain_skipping(http, merge_request, others)
+        notes_path = "merge_requests/#{merge_request["iid"]}/notes"
+        notes = JSON.parse(request(http, Net::HTTP::Get, "#{notes_path}?#{URI.encode_www_form(per_page: 100)}").body)
+        return if notes.any? { it.dig("author", "id") == own_user(http)["id"] && it["body"].to_s.include?(SKIPPING_MARKER) }
+
+        body = <<~BODY.chomp
+          #{SKIPPING_MARKER}
+          This branch has commits from #{others.join(", ")}, so secupdater won't update it any more, \
+          including rebasing it when `#{target_branch}` changes.
+
+          To hand it back, delete the branch, or force-push it without those commits, and secupdater will take it over on its next run.
+        BODY
+        request(http, Net::HTTP::Post, notes_path, { body: })
       end
 
       def close_merge_request(http, iid, reason)
@@ -129,10 +161,12 @@ module Secupdater
       end
 
       def own_emails(http)
-        @own_emails ||= begin
-          user = JSON.parse(api_request(http, Net::HTTP::Get, "user").body)
-          user.values_at("email", "commit_email", "public_email").reject { it.nil? || it.empty? }
-        end
+        own_user(http).values_at("email", "commit_email", "public_email").reject { it.nil? || it.empty? }
+      end
+
+      # Whoever owns the access token
+      def own_user(http)
+        @own_user ||= JSON.parse(api_request(http, Net::HTTP::Get, "user").body)
       end
 
       def branch_has_changes?(http)
@@ -141,6 +175,17 @@ module Secupdater
           res = request(http, Net::HTTP::Get, "repository/files/#{URI.encode_www_form_component(change.filename)}/raw?#{query}", allow_missing: true)
           res&.body == change.content
         end
+      end
+
+      # Whether a manifest has changed on the target branch since the branch was
+      # cut from it. The update can come out the same even then (e.g. when another
+      # MR made some of the same bumps), but the branch would show changes the
+      # target already has, and may conflict.
+      def target_manifests_moved_on?(http)
+        query = URI.encode_www_form(from: reference, to: start_sha)
+        diffs = JSON.parse(request(http, Net::HTTP::Get, "repository/compare?#{query}").body)["diffs"]
+
+        diffs.any? { ecosystem.manifest_paths.intersect?(it.values_at("old_path", "new_path")) }
       end
 
       def request(http, type, path, data = nil, allow_missing: false)

@@ -53,9 +53,17 @@ RSpec.describe Secupdater::Publisher::Gitlab do
       .to_return(status: 200, body: { commits: branch_commits }.to_json)
   end
 
+  let(:target_diffs_since_branch) { [] }
+
+  let!(:target_moved_on_stub) do
+    stub_request(:get, "#{project_api}/repository/compare")
+      .with(query: { from: "security/css_parser-1.1.0", to: "abc123" })
+      .to_return(status: 200, body: { commits: [], diffs: target_diffs_since_branch }.to_json)
+  end
+
   let!(:user_stub) do
     stub_request(:get, "#{api}/user")
-      .to_return(status: 200, body: { email: bot_email, commit_email: bot_email, public_email: "" }.to_json)
+      .to_return(status: 200, body: { id: 42, email: bot_email, commit_email: bot_email, public_email: "" }.to_json)
   end
 
   let!(:branch_file_stub) do
@@ -97,6 +105,30 @@ RSpec.describe Secupdater::Publisher::Gitlab do
         expect(publish).to eq([:published, nil])
 
         expect(create_commit_stub).to have_been_requested
+        expect(create_mr_stub).to have_been_requested
+      end
+    end
+
+    context "with advisories for other gems the update also fixes" do
+      let(:advisories) do
+        [
+          Secupdater::SecurityAdvisory.new("css_parser", "cve/2024-0001", [">= 1.1.0"]),
+          Secupdater::SecurityAdvisory.new("addressable", "ghsa/abcd-efgh", [">= 2.9.0"])
+        ]
+      end
+
+      let!(:create_mr_stub) do
+        stub_request(:post, "#{project_api}/merge_requests")
+          .with(body: hash_including(
+            source_branch: "security/css_parser-1.1.0",
+            description: "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n* ghsa/abcd-efgh (addressable)\n"
+          ))
+          .to_return(status: 201, body: { iid: 9 }.to_json)
+      end
+
+      it "names the other gem against its advisories" do
+        publish
+
         expect(create_mr_stub).to have_been_requested
       end
     end
@@ -172,16 +204,55 @@ RSpec.describe Secupdater::Publisher::Gitlab do
     end
 
     context "an open MR, labelled or not" do
-      let(:existing_merge_requests) { [{ iid: 7, state: "opened", labels: [] }, { iid: 3, state: "closed", labels: ["secupdater"] }] }
+      let(:description) { "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n" }
+      let(:existing_merge_requests) { [{ iid: 7, state: "opened", labels: [], description: }, { iid: 3, state: "closed", labels: ["secupdater"] }] }
       let(:branch_exists) { true }
+
+      let!(:update_description_stub) do
+        stub_request(:put, "#{project_api}/merge_requests/7")
+          .with(body: { description: "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2024-0001\n" }, headers: headers)
+          .to_return(status: 200, body: "{}")
+      end
 
       context "whose branch already has these changes" do
         let(:branch_lockfile) { "abc" }
+
+        context "but whose description lists different advisories (e.g. the update has since absorbed another gem's)" do
+          let(:description) { "Upgrade RubyGems dependency css_parser to version 1.1.0 to address the following security advisories:\n\n* cve/2023-9999\n" }
+
+          it "updates the description, without committing" do
+            expect(publish).to eq([:published, nil])
+
+            expect(update_description_stub).to have_been_requested
+            expect(a_request(:post, "#{project_api}/repository/commits")).not_to have_been_made
+          end
+        end
 
         it "leaves it alone" do
           expect(publish).to eq([:up_to_date, nil])
 
           expect(a_request(:post, //)).not_to have_been_made
+        end
+
+        context "but main has changed other files since the branch was cut" do
+          let(:target_diffs_since_branch) { [{ old_path: "app/models/user.rb", new_path: "app/models/user.rb" }] }
+
+          it "leaves it alone" do
+            expect(publish).to eq([:up_to_date, nil])
+
+            expect(a_request(:post, //)).not_to have_been_made
+          end
+        end
+
+        context "but main's Gemfile.lock has changed since the branch was cut (e.g. another MR made some of the same bumps)" do
+          let(:target_diffs_since_branch) { [{ old_path: "Gemfile.lock", new_path: "Gemfile.lock" }] }
+
+          it "replaces the branch's commit, from start_sha, so it doesn't show changes main already has" do
+            expect(publish).to eq([:published, nil])
+
+            expect(force_commit_stub).to have_been_requested
+            expect(create_mr_stub).not_to have_been_requested
+          end
         end
       end
 
@@ -202,10 +273,72 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           ]
         end
 
+        let(:existing_notes) { [] }
+
+        let!(:notes_stub) do
+          stub_request(:get, "#{project_api}/merge_requests/7/notes")
+            .with(query: { per_page: "100" }, headers: headers)
+            .to_return(status: 200, body: existing_notes.to_json)
+        end
+
+        let!(:comment_stub) do
+          stub_request(:post, "#{project_api}/merge_requests/7/notes")
+            .with(body: { body: <<~BODY.chomp }, headers: headers)
+              <!-- secupdater:skipping -->
+              This branch has commits from Jo Bloggs, so secupdater won't update it any more, including rebasing it when `main` changes.
+
+              To hand it back, delete the branch, or force-push it without those commits, and secupdater will take it over on its next run.
+            BODY
+            .to_return(status: 201, body: "{}")
+        end
+
         it "leaves the branch alone and says why" do
           expect(publish).to eq([:skipped, "security/css_parser-1.1.0 has commits from Jo Bloggs, so it won't be updated"])
 
-          expect(a_request(:post, //)).not_to have_been_made
+          expect(a_request(:post, "#{project_api}/repository/commits")).not_to have_been_made
+          expect(a_request(:put, //)).not_to have_been_made
+        end
+
+        it "comments on the MR to say secupdater has stopped updating it" do
+          publish
+
+          expect(comment_stub).to have_been_requested
+        end
+
+        context "when it has already said so" do
+          let(:existing_notes) do
+            [
+              { author: { id: 7 }, body: "Thanks, I've fixed the spec" },
+              { author: { id: 42 }, body: "<!-- secupdater:skipping -->\nThis branch has commits from Jo Bloggs…" }
+            ]
+          end
+
+          it "doesn't say it again" do
+            expect(publish.first).to eq(:skipped)
+
+            expect(a_request(:post, //)).not_to have_been_made
+          end
+        end
+
+        context "when only someone else has posted the marker (e.g. quoting it)" do
+          let(:existing_notes) { [{ author: { id: 7 }, body: "> <!-- secupdater:skipping -->" }] }
+
+          it "still says so" do
+            publish
+
+            expect(comment_stub).to have_been_requested
+          end
+        end
+      end
+
+      context "a branch without an MR, with a commit from someone else" do
+        let(:existing_merge_requests) { [] }
+        let(:branch_commits) { [{ author_name: "Jo Bloggs", author_email: "jo@example.com" }] }
+
+        it "skips it without commenting anywhere" do
+          expect(publish.first).to eq(:skipped)
+
+          expect(a_request(:any, %r{/notes})).not_to have_been_made
         end
       end
 
@@ -275,6 +408,32 @@ RSpec.describe Secupdater::Publisher::Gitlab do
 
         expect(a_request(:post, "#{project_api}/merge_requests/5/notes").with(body: { body: "Superseded by !9." })).to have_been_made
         expect(a_request(:put, "#{project_api}/merge_requests/5")).to have_been_made
+        expect(a_request(:put, //)).to have_been_made.once
+      end
+    end
+
+    context "an MR for a dependency whose advisories this run's MR for another dependency also fixes" do
+      let(:advisories) do
+        [
+          Secupdater::SecurityAdvisory.new("css_parser", "cve/2024-0001", [">= 1.1.0"]),
+          Secupdater::SecurityAdvisory.new("addressable", "ghsa/abcd-efgh", [">= 2.9.0"])
+        ]
+      end
+      let(:open_secupdater_merge_requests) do
+        [
+          { iid: 4, source_branch: "security/addressable-2.9.0" },
+          { iid: 9, source_branch: "security/css_parser-1.1.0" }
+        ]
+      end
+
+      before do
+        stub_request(:post, "#{project_api}/merge_requests").to_return(status: 201, body: { iid: 9 }.to_json)
+        publish
+      end
+
+      it "closes it, saying which MR superseded it" do
+        expect(gitlab.finish(["addressable", "css_parser"])).to eq(["closed !4 (security/addressable-2.9.0): Superseded by !9."])
+
         expect(a_request(:put, //)).to have_been_made.once
       end
     end

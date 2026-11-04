@@ -5,7 +5,8 @@ require "stringio"
 require "tmpdir"
 
 module UpdateSpec
-  # outcomes: gem name => version try_update moves it to, :unchanged, :fail, :fail_unretryable or :abort, or a hash of those by level
+  # outcomes: gem name => version try_update moves it to, a hash of gem name => version when the update
+  # moves other gems too, :unchanged, :fail, :fail_unretryable or :abort, or a hash of those by level
   class FakeEcosystem
     LOCKFILE = "Gemfile.lock"
 
@@ -35,7 +36,7 @@ module UpdateSpec
       attempts << [name, level]
 
       outcome = outcomes.fetch(name)
-      outcome = outcome.fetch(level) if outcome.is_a?(Hash)
+      outcome = outcome.fetch(level) if outcome.is_a?(Hash) && outcome.keys.all?(Symbol)
 
       case outcome
       when :fail
@@ -47,7 +48,8 @@ module UpdateSpec
       when :unchanged
         []
       else
-        after = JSON.generate(JSON.parse(before).merge(name => outcome))
+        moves = outcome.is_a?(Hash) ? outcome : { name => outcome }
+        after = JSON.generate(JSON.parse(before).merge(moves))
         File.write(LOCKFILE, after)
         [Secupdater::FileChange.new(LOCKFILE, "update", after, before)]
       end
@@ -379,6 +381,127 @@ RSpec.describe Secupdater::Update do
         expect { update.call([advisory("rack", "cve/1")]) }.to raise_error(Secupdater::Error)
 
         expect(lockfile_on_disk).to eq(lockfile)
+      end
+    end
+
+    context "one gem's update also fixes other vulnerable gems (e.g. rails-html-sanitizer needing newer loofah and nokogiri)" do
+      let(:lockfile) { { "rails-html-sanitizer" => "1.0", "loofah" => "1.0", "nokogiri" => "1.0" } }
+      let(:outcomes) do
+        {
+          "rails-html-sanitizer" => { "rails-html-sanitizer" => "2.0", "loofah" => "2.0", "nokogiri" => "2.0" },
+          "loofah" => { "loofah" => "2.0", "nokogiri" => "2.0" },
+          "nokogiri" => "2.0"
+        }
+      end
+      let(:advisories) do
+        [advisory("loofah", "ghsa/l"), advisory("nokogiri", "ghsa/n1"), advisory("nokogiri", "ghsa/n2"), advisory("rails-html-sanitizer", "ghsa/r")]
+      end
+
+      it "publishes the update that covers the most, once, with every gem's advisories" do
+        update.call(advisories)
+
+        expect(published.length).to eq(1)
+
+        _, bump, advs, changes = published.first
+        expect(bump.dependency.name).to eq("rails-html-sanitizer")
+        expect(advs.map(&:report_id)).to contain_exactly("ghsa/r", "ghsa/l", "ghsa/n1", "ghsa/n2")
+        expect(JSON.parse(changes.first.content)).to eq("rails-html-sanitizer" => "2.0", "loofah" => "2.0", "nokogiri" => "2.0")
+      end
+
+      it "returns :absorbed for the gems it covers" do
+        expect(update.call(advisories)).to eq(
+          "loofah" => :absorbed,
+          "nokogiri" => :absorbed,
+          "rails-html-sanitizer" => :published
+        )
+      end
+
+      it "logs which of its moves resolves each of the other gems' advisories" do
+        update.call(advisories)
+
+        expect(log.string).to match(%r{^INFO upgrading rails-html-sanitizer from 1\.0 to 2\.0 \(patch\) moves loofah from 1\.0 to 2\.0, which would resolve loofah ghsa/l})
+      end
+
+      it "tells the publisher to tidy up every gem, so their own MRs get closed" do
+        update.call(advisories)
+
+        expect(publisher).to have_received(:finish).with(["loofah", "nokogiri", "rails-html-sanitizer"])
+      end
+
+      it "leaves the lockfile as it found it" do
+        update.call(advisories)
+
+        expect(lockfile_on_disk).to eq(lockfile)
+      end
+
+      context "and the covering update was declined" do
+        before do
+          allow(publisher).to receive(:call) do |*args|
+            published << args
+            args[1].dependency.name == "rails-html-sanitizer" ? [:declined, "security/rails-html-sanitizer-2.0 was closed in !7"] : [:published, nil]
+          end
+        end
+
+        it "publishes the other gems without it, still folding them together where it can" do
+          expect(update.call(advisories)).to eq(
+            "loofah" => :published,
+            "nokogiri" => :absorbed,
+            "rails-html-sanitizer" => :declined
+          )
+
+          loofah = published.find { it[1].dependency.name == "loofah" }
+          expect(loofah[2].map(&:report_id)).to contain_exactly("ghsa/l", "ghsa/n1", "ghsa/n2")
+        end
+      end
+
+      context "with no publisher (dry run)" do
+        let(:publisher) { nil }
+
+        it "returns :resolved for the covering gem and :absorbed for the others" do
+          expect(update.call(advisories)).to eq(
+            "loofah" => :absorbed,
+            "nokogiri" => :absorbed,
+            "rails-html-sanitizer" => :resolved
+          )
+        end
+      end
+    end
+
+    context "a gem whose own update fails, but another gem's update fixes it" do
+      let(:outcomes) { { "rack" => { "rack" => "2.1", "nokogiri" => "2.0" }, "nokogiri" => :fail } }
+
+      it "returns :absorbed for it, without logging its failure as an error" do
+        expect(update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])).to eq("rack" => :published, "nokogiri" => :absorbed)
+        expect(log.string).not_to match(/^ERROR/)
+      end
+    end
+
+    context "a gem's update moves another vulnerable gem, but not far enough to fix it" do
+      let(:outcomes) { { "rack" => { "rack" => "2.1", "nokogiri" => "1.5" }, "nokogiri" => "2.0" } }
+
+      it "publishes each separately" do
+        expect(update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])).to eq("rack" => :published, "nokogiri" => :published)
+
+        expect(published.map { [it[1].dependency.name, it[2].map(&:report_id)] }).to contain_exactly(["rack", ["cve/1"]], ["nokogiri", ["cve/2"]])
+      end
+    end
+
+    context "a gem's update fixes another gem, but doesn't fix its own advisories" do
+      let(:outcomes) { { "rack" => { "rack" => "1.5", "nokogiri" => "2.0" }, "nokogiri" => "2.0" } }
+
+      it "doesn't absorb anything into it" do
+        expect(update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])).to eq("rack" => :unresolved, "nokogiri" => :published)
+      end
+    end
+
+    context "two gems whose updates each fix the other" do
+      let(:outcomes) do
+        { "rack" => { "rack" => "2.1", "nokogiri" => "2.0" }, "nokogiri" => { "rack" => "2.1", "nokogiri" => "2.0" } }
+      end
+
+      it "publishes one of them, picked by name, so every run agrees" do
+        expect(update.call([advisory("rack", "cve/1"), advisory("nokogiri", "cve/2")])).to eq("rack" => :absorbed, "nokogiri" => :published)
+        expect(published.length).to eq(1)
       end
     end
 
