@@ -97,6 +97,23 @@ RSpec.describe Secupdater::Publisher::Gitlab do
       .to_return(status: 201, body: { iid: 9 }.to_json)
   end
 
+  let(:head_pipeline) { nil }
+  let(:merge_request_details) do
+    { sha: "def456", draft: false, merge_when_pipeline_succeeds: false, head_pipeline: }
+  end
+
+  let!(:get_merge_request_stub) do
+    stub_request(:get, %r{\A#{project_api}/merge_requests/\d+\z})
+      .with(headers: headers)
+      .to_return(status: 200, body: merge_request_details.to_json)
+  end
+
+  let!(:auto_merge_stub) do
+    stub_request(:put, %r{\A#{project_api}/merge_requests/\d+/merge\z})
+      .with(body: { auto_merge: true, sha: "def456", should_remove_source_branch: true }, headers: headers)
+      .to_return(status: 200, body: "{}")
+  end
+
   def publish = gitlab.call(ecosystem, bump, advisories, changes)
 
   describe "#call(ecosystem, bump, advisories, changes)" do
@@ -106,6 +123,13 @@ RSpec.describe Secupdater::Publisher::Gitlab do
 
         expect(create_commit_stub).to have_been_requested
         expect(create_mr_stub).to have_been_requested
+      end
+
+      it "leaves auto-merge to the next run, as the commit has no pipeline yet" do
+        publish
+
+        expect(get_merge_request_stub).not_to have_been_requested
+        expect(auto_merge_stub).not_to have_been_requested
       end
     end
 
@@ -234,6 +258,91 @@ RSpec.describe Secupdater::Publisher::Gitlab do
           expect(a_request(:post, //)).not_to have_been_made
         end
 
+        describe "auto-merge" do
+          context "with a pipeline running for the branch's head commit" do
+            let(:head_pipeline) { { sha: "def456", status: "running" } }
+
+            it "sets the MR to auto-merge, pinned to that commit" do
+              expect(publish).to eq([:up_to_date, nil])
+
+              expect(a_request(:put, "#{project_api}/merge_requests/7/merge")).to have_been_made
+            end
+
+            context "already set to auto-merge" do
+              let(:merge_request_details) { super().merge(merge_when_pipeline_succeeds: true) }
+
+              it "doesn't set it again" do
+                publish
+
+                expect(auto_merge_stub).not_to have_been_requested
+              end
+            end
+
+            context "on a draft MR" do
+              let(:merge_request_details) { super().merge(draft: true) }
+
+              it "leaves it for whoever marked it draft" do
+                publish
+
+                expect(auto_merge_stub).not_to have_been_requested
+              end
+            end
+
+            context "that GitLab won't merge (e.g. it has conflicts)" do
+              let!(:auto_merge_stub) do
+                stub_request(:put, "#{project_api}/merge_requests/7/merge")
+                  .to_return(status: 405, body: '{"message":"405 Method Not Allowed"}')
+              end
+
+              it "says so, without failing the update" do
+                expect(publish).to eq([:up_to_date, "security/css_parser-1.1.0: couldn't set !7 to auto-merge, GitLab returned 405: {\"message\":\"405 Method Not Allowed\"}"])
+              end
+            end
+
+            context "when the token isn't allowed to merge" do
+              let!(:auto_merge_stub) do
+                stub_request(:put, "#{project_api}/merge_requests/7/merge")
+                  .to_return(status: 401, body: '{"message":"401 Unauthorized"}')
+              end
+
+              it "fails the update" do
+                expect { publish }.to raise_error(Secupdater::PublishFailed, /401/)
+              end
+            end
+          end
+
+          context "without a pipeline" do
+            it "waits for one" do
+              publish
+
+              expect(get_merge_request_stub).to have_been_requested
+              expect(auto_merge_stub).not_to have_been_requested
+            end
+          end
+
+          context "with a pipeline for an older commit" do
+            let(:head_pipeline) { { sha: "abc000", status: "success" } }
+
+            it "waits for one for the head commit" do
+              publish
+
+              expect(auto_merge_stub).not_to have_been_requested
+            end
+          end
+
+          %w[failed canceled skipped].each do |status|
+            context "with a #{status} pipeline" do
+              let(:head_pipeline) { { sha: "def456", status: } }
+
+              it "doesn't set it, as the pipeline can't pass" do
+                publish
+
+                expect(auto_merge_stub).not_to have_been_requested
+              end
+            end
+          end
+        end
+
         context "but main has changed other files since the branch was cut" do
           let(:target_diffs_since_branch) { [{ old_path: "app/models/user.rb", new_path: "app/models/user.rb" }] }
 
@@ -262,6 +371,16 @@ RSpec.describe Secupdater::Publisher::Gitlab do
 
           expect(force_commit_stub).to have_been_requested
           expect(create_mr_stub).not_to have_been_requested
+        end
+
+        context "with a pipeline for the replaced commit" do
+          let(:head_pipeline) { { sha: "def456", status: "running" } }
+
+          it "leaves auto-merge to the next run, once the new commit has a pipeline" do
+            publish
+
+            expect(auto_merge_stub).not_to have_been_requested
+          end
         end
       end
 

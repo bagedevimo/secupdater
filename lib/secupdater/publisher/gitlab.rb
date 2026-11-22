@@ -39,6 +39,7 @@ module Secupdater
           else
             commit(http)
           end
+          committed = !up_to_date
 
           if open_merge_request
             remember(open_merge_request)
@@ -46,13 +47,18 @@ module Secupdater
             # e.g. when this update has since absorbed another dependency's advisories
             described = open_merge_request["description"] == description
             request(http, Net::HTTP::Put, "merge_requests/#{open_merge_request["iid"]}", { description: description }) unless described
-
-            return [:up_to_date, nil] if up_to_date && described
           else
-            remember(JSON.parse(create_merge_request(http).body))
+            open_merge_request = JSON.parse(create_merge_request(http).body)
+            remember(open_merge_request)
           end
 
-          [:published, nil]
+          # A commit cancels auto-merge, and its pipeline won't have started
+          # yet, so a run that commits leaves auto-merge to the next run
+          message = enable_auto_merge(http, open_merge_request["iid"]) unless committed
+
+          return [:up_to_date, message] if up_to_date && described
+
+          [:published, message]
         end
       end
 
@@ -125,6 +131,25 @@ module Secupdater
         request(http, Net::HTTP::Post, notes_path, { body: })
       end
 
+      # GitLab doesn't document what auto-merge does without a pipeline, so it
+      # is only set once the branch's head commit has a pipeline that can still
+      # pass. Returns a message if GitLab won't set it (e.g. the MR can't merge).
+      def enable_auto_merge(http, iid)
+        merge_request = JSON.parse(request(http, Net::HTTP::Get, "merge_requests/#{iid}").body)
+        return if merge_request["merge_when_pipeline_succeeds"] || merge_request["draft"]
+
+        pipeline = merge_request["head_pipeline"]
+        return unless pipeline && pipeline["sha"] == merge_request["sha"]
+        return if %w[failed canceled skipped].include?(pipeline["status"])
+
+        # sha makes GitLab refuse (409) if the branch has moved on since
+        data = { auto_merge: true, sha: merge_request["sha"], should_remove_source_branch: true }
+        res = request(http, Net::HTTP::Put, "merge_requests/#{iid}/merge", data, tolerate: [405, 406, 409, 422])
+        return if res.is_a?(Net::HTTPSuccess)
+
+        "#{reference}: couldn't set !#{iid} to auto-merge, GitLab returned #{res.code}: #{res.body}"
+      end
+
       def close_merge_request(http, iid, reason)
         request(http, Net::HTTP::Post, "merge_requests/#{iid}/notes", { body: reason })
         request(http, Net::HTTP::Put, "merge_requests/#{iid}", { state_event: "close" })
@@ -188,11 +213,12 @@ module Secupdater
         diffs.any? { ecosystem.manifest_paths.intersect?(it.values_at("old_path", "new_path")) }
       end
 
-      def request(http, type, path, data = nil, allow_missing: false)
-        api_request(http, type, "projects/#{URI.encode_www_form_component(project_id)}/#{path}", data, allow_missing:)
+      def request(http, type, path, data = nil, allow_missing: false, tolerate: [])
+        api_request(http, type, "projects/#{URI.encode_www_form_component(project_id)}/#{path}", data, allow_missing:, tolerate:)
       end
 
-      def api_request(http, type, path, data = nil, allow_missing: false)
+      # tolerate: status codes to return the response for instead of raising
+      def api_request(http, type, path, data = nil, allow_missing: false, tolerate: [])
         req = type.new(
           "/api/v4/#{path}",
           "PRIVATE-TOKEN" => access_token,
@@ -203,6 +229,7 @@ module Secupdater
         res = http.request(req)
 
         return if allow_missing && res.is_a?(Net::HTTPNotFound)
+        return res if tolerate.include?(res.code.to_i)
 
         unless res.is_a?(Net::HTTPSuccess)
           raise Secupdater::PublishFailed, "GitLab #{req.method} #{req.path} returned #{res.code}: #{res.body}"
